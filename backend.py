@@ -27,17 +27,69 @@ def close_db(exc):
 def init_db():
     with app.app_context():
         db = get_db()
+        cursor = db.cursor()
+        
+        # Check if chat_messages table exists and does NOT have chat_id column
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'")
+        table_exists = cursor.fetchone()
+        
+        has_chat_id = False
+        if table_exists:
+            cursor.execute("PRAGMA table_info(chat_messages)")
+            columns = cursor.fetchall()
+            has_chat_id = any(col['name'] == 'chat_id' for col in columns)
+        
+        # If legacy table exists (no chat_id), let's rename it to migrate it
+        if table_exists and not has_chat_id:
+            db.execute("ALTER TABLE chat_messages RENAME TO legacy_chat_messages")
+        
+        # Create chats table
         db.execute(
             '''
-            CREATE TABLE IF NOT EXISTS chat_messages (
+            CREATE TABLE IF NOT EXISTS chats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sender TEXT NOT NULL,
-                message TEXT NOT NULL,
+                title TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
             '''
         )
+        
+        # Create new chat_messages table
+        db.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                sender TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+            )
+            '''
+        )
+        
+        # If we had legacy messages, migrate them
+        if table_exists and not has_chat_id:
+            cursor.execute("SELECT COUNT(*) FROM legacy_chat_messages")
+            legacy_count = cursor.fetchone()[0]
+            if legacy_count > 0:
+                # Create a default chat for the legacy messages
+                now = datetime.utcnow().isoformat()
+                cursor.execute(
+                    "INSERT INTO chats (title, created_at) VALUES (?, ?)",
+                    ("Imported Chat", now)
+                )
+                chat_id = cursor.lastrowid
+                
+                # Copy messages
+                cursor.execute(
+                    f"INSERT INTO chat_messages (chat_id, sender, message, created_at) SELECT {chat_id}, sender, message, created_at FROM legacy_chat_messages"
+                )
+            
+            db.execute("DROP TABLE legacy_chat_messages")
+            
         db.commit()
+
 
 
 @app.before_request
@@ -110,11 +162,63 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/chats')
+def list_chats():
+    db = get_db()
+    rows = db.execute(
+        'SELECT id, title, created_at FROM chats ORDER BY id DESC'
+    ).fetchall()
+    return jsonify({'chats': [
+        {'id': row['id'], 'title': row['title'], 'created_at': row['created_at']}
+        for row in rows
+    ]})
+
+
+@app.route('/api/chats', methods=['POST'])
+def create_chat():
+    now = datetime.utcnow().isoformat()
+    db = get_db()
+    cursor = db.execute(
+        'INSERT INTO chats (title, created_at) VALUES (?, ?)',
+        ('New Chat', now)
+    )
+    db.commit()
+    chat_id = cursor.lastrowid
+    return jsonify({'id': chat_id, 'title': 'New Chat', 'created_at': now})
+
+
+@app.route('/api/chats/<int:chat_id>', methods=['DELETE'])
+def delete_chat(chat_id):
+    db = get_db()
+    db.execute('DELETE FROM chats WHERE id = ?', (chat_id,))
+    db.execute('DELETE FROM chat_messages WHERE chat_id = ?', (chat_id,))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/chats/<int:chat_id>/messages')
+def get_chat_messages(chat_id):
+    db = get_db()
+    rows = db.execute(
+        'SELECT sender, message, created_at FROM chat_messages WHERE chat_id = ? ORDER BY id ASC',
+        (chat_id,)
+    ).fetchall()
+    return jsonify({'messages': [
+        {'sender': row['sender'], 'message': row['message'], 'created_at': row['created_at']}
+        for row in rows
+    ]})
+
+
 @app.route('/api/history')
 def history():
     db = get_db()
+    latest_chat = db.execute('SELECT id FROM chats ORDER BY id DESC LIMIT 1').fetchone()
+    if not latest_chat:
+        return jsonify({'messages': []})
+    
     rows = db.execute(
-        'SELECT sender, message, created_at FROM chat_messages ORDER BY id ASC'
+        'SELECT sender, message, created_at FROM chat_messages WHERE chat_id = ? ORDER BY id ASC',
+        (latest_chat['id'],)
     ).fetchall()
     return jsonify({'messages': [
         {'sender': row['sender'], 'message': row['message'], 'created_at': row['created_at']}
@@ -126,26 +230,46 @@ def history():
 def chat():
     data = request.get_json() or {}
     user_input = (data.get('message') or '').strip()
+    chat_id = data.get('chat_id')
 
     if not user_input:
         return jsonify({'reply': 'Please enter a message.'})
 
+    db = get_db()
+    if not chat_id:
+        latest = db.execute('SELECT id FROM chats ORDER BY id DESC LIMIT 1').fetchone()
+        if latest:
+            chat_id = latest['id']
+        else:
+            now = datetime.utcnow().isoformat()
+            cursor = db.execute(
+                'INSERT INTO chats (title, created_at) VALUES (?, ?)',
+                ('New Chat', now)
+            )
+            chat_id = cursor.lastrowid
+
     reply = get_response(user_input)
     now = datetime.utcnow().isoformat()
 
-    db = get_db()
+    chat_info = db.execute('SELECT title FROM chats WHERE id = ?', (chat_id,)).fetchone()
+    if chat_info and chat_info['title'] == 'New Chat':
+        title = user_input[:30] + '...' if len(user_input) > 30 else user_input
+        title = title.capitalize()
+        db.execute('UPDATE chats SET title = ? WHERE id = ?', (title, chat_id))
+
     db.execute(
-        'INSERT INTO chat_messages (sender, message, created_at) VALUES (?, ?, ?)',
-        ('user', user_input, now),
+        'INSERT INTO chat_messages (chat_id, sender, message, created_at) VALUES (?, ?, ?, ?)',
+        (chat_id, 'user', user_input, now),
     )
     db.execute(
-        'INSERT INTO chat_messages (sender, message, created_at) VALUES (?, ?, ?)',
-        ('bot', reply, now),
+        'INSERT INTO chat_messages (chat_id, sender, message, created_at) VALUES (?, ?, ?, ?)',
+        (chat_id, 'bot', reply, now),
     )
     db.commit()
 
-    return jsonify({'reply': reply})
+    return jsonify({'reply': reply, 'chat_id': chat_id})
 
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+

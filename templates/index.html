@@ -45,39 +45,141 @@
     .sidebar {
       background: linear-gradient(180deg, #0f172a, #172554);
       color: white;
-      padding: 24px 20px;
+      padding: 24px 16px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 20px;
+      overflow-y: auto;
     }
 
     .brand {
       font-size: 24px;
       font-weight: 700;
-      margin-bottom: 8px;
+      margin-bottom: 4px;
     }
 
-    .tagline {
-      color: #cbd5e1;
+    .new-chat-btn {
+      border: 1px dashed rgba(255, 255, 255, 0.3);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .new-chat-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+      border-color: white;
+    }
+
+    .chats-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      min-height: 200px;
+    }
+
+    .chats-header {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+
+    .chat-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .chat-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: transparent;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      gap: 8px;
+    }
+
+    .chat-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .chat-item.active {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .chat-title-wrapper {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-size: 14px;
-      line-height: 1.6;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .chat-delete-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: all 0.2s ease;
+    }
+
+    .chat-item:hover .chat-delete-btn,
+    .chat-item.active .chat-delete-btn {
+      opacity: 1;
+    }
+
+    .chat-delete-btn:hover {
+      color: #ef4444;
+      background: rgba(239, 68, 68, 0.15);
     }
 
     .quick-actions {
       display: grid;
-      gap: 10px;
-      margin-top: 8px;
+      gap: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 16px;
+      margin-top: auto;
     }
 
     .quick-btn {
       border: none;
       border-radius: 10px;
-      padding: 10px 12px;
+      padding: 8px 12px;
       text-align: left;
       cursor: pointer;
+      background: rgba(255,255,255,0.06);
+      color: #cbd5e1;
+      font-size: 13px;
+      transition: all 0.2s ease;
+    }
+
+    .quick-btn:hover {
       background: rgba(255,255,255,0.12);
       color: white;
-      font-size: 14px;
     }
 
     .main {
@@ -184,8 +286,19 @@
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">🤖 Chatbot Studio</div>
-      <div class="tagline">A polished rule-based assistant with conversation history and a modern chat experience.</div>
+      <button class="new-chat-btn" onclick="createNewChat()">
+        <span>+</span> New Chat
+      </button>
+      
+      <div class="chats-section">
+        <div class="chats-header">Recent Chats</div>
+        <div class="chat-list" id="chatList">
+          <!-- Chat items will be loaded dynamically -->
+        </div>
+      </div>
+
       <div class="quick-actions">
+        <div style="font-size: 12px; color: #94a3b8; font-weight: 600; margin-bottom: 4px;">Quick Commands</div>
         <button class="quick-btn" data-text="hi">Say hello</button>
         <button class="quick-btn" data-text="time">Check time</button>
         <button class="quick-btn" data-text="joke">Tell me a joke</button>
@@ -211,18 +324,138 @@
   <script>
     const messages = document.getElementById('messages');
     const input = document.getElementById('messageInput');
+    const chatList = document.getElementById('chatList');
+    
+    let activeChatId = null;
 
     function renderMessage(text, sender, time = '') {
       const bubble = document.createElement('div');
       bubble.className = `msg ${sender}`;
-      bubble.innerHTML = `<div>${text}</div>${time ? `<div class="msg meta">${time}</div>` : ''}`;
+      let formattedTime = '';
+      if (time) {
+        try {
+          const date = new Date(time);
+          formattedTime = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch(e) {
+          formattedTime = time;
+        }
+      }
+      bubble.innerHTML = `<div>${text}</div>${formattedTime ? `<div class="msg meta">${formattedTime}</div>` : ''}`;
       messages.appendChild(bubble);
       messages.scrollTop = messages.scrollHeight;
     }
 
-    async function loadHistory() {
+    async function loadChats() {
       try {
-        const response = await fetch('/api/history');
+        const response = await fetch('/api/chats');
+        const data = await response.json();
+        
+        chatList.innerHTML = '';
+        if (data.chats.length === 0) {
+          await createNewChat();
+          return;
+        }
+
+        data.chats.forEach(chat => {
+          const item = document.createElement('div');
+          item.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
+          item.onclick = (e) => {
+            if (e.target.closest('.chat-delete-btn')) return;
+            selectChat(chat.id);
+          };
+
+          const titleWrapper = document.createElement('div');
+          titleWrapper.className = 'chat-title-wrapper';
+          titleWrapper.innerHTML = `💬 <span>${escapeHtml(chat.title)}</span>`;
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'chat-delete-btn';
+          deleteBtn.title = 'Delete Chat';
+          deleteBtn.innerHTML = '🗑️';
+          deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteChat(chat.id);
+          };
+
+          item.appendChild(titleWrapper);
+          item.appendChild(deleteBtn);
+          chatList.appendChild(item);
+        });
+
+        if (!activeChatId && data.chats.length > 0) {
+          selectChat(data.chats[0].id);
+        }
+      } catch (error) {
+        console.error('Error loading chats:', error);
+      }
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    async function createNewChat() {
+      try {
+        const response = await fetch('/api/chats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const chat = await response.json();
+        activeChatId = chat.id;
+        await loadChats();
+        selectChat(chat.id);
+      } catch (error) {
+        console.error('Error creating chat:', error);
+      }
+    }
+
+    async function selectChat(chatId) {
+      activeChatId = chatId;
+      
+      document.querySelectorAll('.chat-item').forEach(item => {
+        item.classList.remove('active');
+      });
+      
+      await loadHistory(chatId);
+      
+      const response = await fetch('/api/chats');
+      const data = await response.json();
+      chatList.innerHTML = '';
+      data.chats.forEach(chat => {
+        const item = document.createElement('div');
+        item.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
+        item.onclick = (e) => {
+          if (e.target.closest('.chat-delete-btn')) return;
+          selectChat(chat.id);
+        };
+
+        const titleWrapper = document.createElement('div');
+        titleWrapper.className = 'chat-title-wrapper';
+        titleWrapper.innerHTML = `💬 <span>${escapeHtml(chat.title)}</span>`;
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'chat-delete-btn';
+        deleteBtn.title = 'Delete Chat';
+        deleteBtn.innerHTML = '🗑️';
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          deleteChat(chat.id);
+        };
+
+        item.appendChild(titleWrapper);
+        item.appendChild(deleteBtn);
+        chatList.appendChild(item);
+      });
+    }
+
+    async function loadHistory(chatId) {
+      try {
+        const response = await fetch(`/api/chats/${chatId}/messages`);
         const data = await response.json();
         messages.innerHTML = '';
         if (data.messages.length === 0) {
@@ -232,6 +465,19 @@
         data.messages.forEach(item => renderMessage(item.message, item.sender, item.created_at));
       } catch (error) {
         renderMessage('Unable to load conversation history.', 'bot');
+      }
+    }
+
+    async function deleteChat(chatId) {
+      if (!confirm('Are you sure you want to delete this chat?')) return;
+      try {
+        await fetch(`/api/chats/${chatId}`, { method: 'DELETE' });
+        if (activeChatId === chatId) {
+          activeChatId = null;
+        }
+        await loadChats();
+      } catch (error) {
+        console.error('Error deleting chat:', error);
       }
     }
 
@@ -246,20 +492,26 @@
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify({ message: text, chat_id: activeChatId })
         });
         const data = await response.json();
         renderMessage(data.reply, 'bot');
+        
+        if (data.chat_id) {
+          activeChatId = data.chat_id;
+          await loadChats();
+        }
       } catch (error) {
         renderMessage('Sorry, the server is unavailable.', 'bot');
       }
     }
 
-    document.querySelectorAll('.quick-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        input.value = btn.dataset.text;
+    document.addEventListener('click', (e) => {
+      const quickBtn = e.target.closest('.quick-btn');
+      if (quickBtn) {
+        input.value = quickBtn.dataset.text;
         input.focus();
-      });
+      }
     });
 
     input.addEventListener('keydown', function (event) {
@@ -268,7 +520,8 @@
       }
     });
 
-    loadHistory();
+    loadChats();
   </script>
+
 </body>
 </html>
